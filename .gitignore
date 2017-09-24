@@ -1,3 +1,5 @@
 demo/demo
 demo/*log
 src/*.a
+tags
+.*.swp

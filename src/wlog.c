@@ -69,16 +69,21 @@
     open((const char *) name, mode|create|nblock, access)
 
 
-typedef struct
+
+typedef struct wlog_handle_t_
 {
     unsigned char path_name[MAX_PATH_NAME + 1];
     unsigned char pre_file_name[MAX_PRE_NAME_SIZE + 1];
     uint32_t interval;
-    uint32_t current_time_slot;
-    void *user;
+    uint32_t current_time_slot[WLOG_MAX_THR_NUM];
     int thr_num;
-    unsigned char current_file[MAX_FILE_NAME + 1];
     char *buf[WLOG_MAX_THR_NUM];
+    wlog_mod_t mod;
+
+    int (*wlog_write_func)(struct wlog_handle_t_ *, int, va_list, const char *);
+
+    //每个线程使用一个句柄时使用
+    int thr_fd[WLOG_MAX_THR_NUM];
 
     int new_fd;
     int old_fd;
@@ -189,23 +194,34 @@ static int wlog_mkdirs_with_file(char *path)
 
 
 
-static int wlog_make_file_name(wlog_handle_t *handle, int thr_id)
+static int wlog_make_file_name(wlog_handle_t *handle, int thr_id, char *file_name)
 {
-    time_t time_slot = handle->current_time_slot;
+    time_t time_slot = handle->current_time_slot[thr_id];
     struct tm *ptm;
 
     ptm = localtime(&time_slot);
 
-    snprintf((char *)handle->current_file, MAX_FILE_NAME, "%s/%04d/%02d%02d/%s_%02d_%02d_%d.log", handle->path_name, 
-            ptm->tm_year + 1900, ptm->tm_mon + 1, ptm->tm_mday,
-            handle->pre_file_name, ptm->tm_hour, ptm->tm_min, thr_id);
+    switch (handle->mod)
+    {
+        case wlog_mod_multiple_file:
+            snprintf(file_name, MAX_FILE_NAME, "%s/%04d/%02d%02d/%s_%02d_%02d_%d.log", handle->path_name, 
+                    ptm->tm_year + 1900, ptm->tm_mon + 1, ptm->tm_mday,
+                    handle->pre_file_name, ptm->tm_hour, ptm->tm_min, thr_id);
+            break;
+        default:
+            snprintf(file_name, MAX_FILE_NAME, "%s/%04d/%02d%02d/%s_%02d_%02d.log", handle->path_name, 
+                    ptm->tm_year + 1900, ptm->tm_mon + 1, ptm->tm_mday,
+                    handle->pre_file_name, ptm->tm_hour, ptm->tm_min);
+            break;
+    }
 
-    wlog_mkdirs_with_file((char *)handle->current_file);
+
+    wlog_mkdirs_with_file(file_name);
 
     return 0;
 }
 
-static int wlog_is_create_new(wlog_handle_t *handle)
+static int wlog_is_create_new(wlog_handle_t *handle, int thr_id)
 {
     uint32_t current_time_slot;
 
@@ -216,7 +232,7 @@ static int wlog_is_create_new(wlog_handle_t *handle)
     else
     {
         WLOG_GET_TIME_SLOT(handle, current_time_slot);
-        if (handle->current_time_slot < current_time_slot)
+        if (handle->current_time_slot[thr_id] < current_time_slot)
         {
             return 1;
         }
@@ -224,10 +240,11 @@ static int wlog_is_create_new(wlog_handle_t *handle)
     return 0;
 }
 
-
-static int wlog_swap_file(wlog_handle_t *handle, int thr_id)
+static int wlog_swap_file_single(wlog_handle_t *handle, int thr_id)
 {
-    wlog_make_file_name(handle, thr_id);
+    char file_name[MAX_FILE_NAME] = {0};
+
+    wlog_make_file_name(handle, thr_id, file_name);
 
     if (handle->old_fd > 0)
     {
@@ -236,14 +253,14 @@ static int wlog_swap_file(wlog_handle_t *handle, int thr_id)
 
     handle->old_fd = handle->new_fd;
 
-    if (wlog_is_file_exists((char *)handle->current_file) == 0)
+    if (wlog_is_file_exists(file_name) == 0)
     {
         //文件不存在
-        handle->new_fd = wlog_open_file(handle->current_file, WLOG_FILE_APPEND, WLOG_FILE_CREATE_OR_OPEN, WLOG_FILE_NONBLOCK, WLOG_FILE_DEFAULT_ACCESS);
+        handle->new_fd = wlog_open_file(file_name, WLOG_FILE_APPEND, WLOG_FILE_CREATE_OR_OPEN, WLOG_FILE_NONBLOCK, WLOG_FILE_DEFAULT_ACCESS);
     }
     else
     {
-        handle->new_fd = wlog_open_file(handle->current_file, WLOG_FILE_APPEND, WLOG_FILE_WRONLY, WLOG_FILE_NONBLOCK, WLOG_FILE_DEFAULT_ACCESS);
+        handle->new_fd = wlog_open_file(file_name, WLOG_FILE_APPEND, 0, WLOG_FILE_NONBLOCK, WLOG_FILE_DEFAULT_ACCESS);
     }
 
     return 0;
@@ -251,6 +268,33 @@ static int wlog_swap_file(wlog_handle_t *handle, int thr_id)
 }
 
 
+
+
+
+
+
+static int wlog_swap_file_multiple(wlog_handle_t *handle, int thr_id)
+{
+    char file_name[MAX_FILE_NAME] = {0};
+
+    wlog_make_file_name(handle, thr_id, file_name);
+    if (handle->thr_fd[thr_id] > 0)
+    {
+        close(handle->thr_fd[thr_id]);
+    }
+
+    if (wlog_is_file_exists(file_name) == 0)
+    {
+        //文件不存在
+        handle->thr_fd[thr_id] = wlog_open_file(file_name, WLOG_FILE_APPEND, WLOG_FILE_CREATE_OR_OPEN, 0, WLOG_FILE_DEFAULT_ACCESS);
+    }
+    else
+    {
+        handle->thr_fd[thr_id] = wlog_open_file(file_name, WLOG_FILE_APPEND, 0, 0, WLOG_FILE_DEFAULT_ACCESS);
+    }
+
+    return 0;
+}
 
 static void *wlog_swap_file_thr(void *arg)
 {
@@ -263,26 +307,92 @@ static void *wlog_swap_file_thr(void *arg)
         usleep(100);
         for (i = 0; i < wlog_handle_num; i++)
         {
+            if (handle_g[i]->mod == wlog_mod_multiple_file)
+            {
+                continue;
+            }
             //第一次调用，必须要生成文件
             if (handle_g[i]->new_fd <= 0)
             {
-                WLOG_GET_TIME_SLOT(handle_g[i], handle_g[i]->current_time_slot);
-                wlog_swap_file(handle_g[i], thr_id);
+                WLOG_GET_TIME_SLOT(handle_g[i], handle_g[i]->current_time_slot[thr_id]);
+                wlog_swap_file_single(handle_g[i], thr_id);
             }
             else
             {
                 //需要判断间隔，是否将日志写到新的文件中
-                ret = wlog_is_create_new(handle_g[i]);
+                ret = wlog_is_create_new(handle_g[i], thr_id);
                 if (ret)
                 {
-                    WLOG_GET_TIME_SLOT(handle_g[i], handle_g[i]->current_time_slot);
-                    wlog_swap_file(handle_g[i], thr_id);
+                    WLOG_GET_TIME_SLOT(handle_g[i], handle_g[i]->current_time_slot[thr_id]);
+                    wlog_swap_file_single(handle_g[i], thr_id);
                 }
             }
         }
     }
     return arg;
 }
+
+static int wlog_write(int fd, char *tmp_buf, va_list vp, const char *format)
+{
+    int len = 0;
+    int ret;
+
+    time_t cur_time;
+    struct tm *ptm;
+
+    WLOG_GET_TIME(cur_time);
+    ptm = localtime(&cur_time);
+
+    len = snprintf(tmp_buf, WLOG_MAX_LOG_BUF, "[%04d-%02d-%02d %02d:%02d:%02d] ",
+            ptm->tm_year + 1900, ptm->tm_mon + 1, ptm->tm_mday,
+            ptm->tm_hour, ptm->tm_min, ptm->tm_sec);
+
+    len += vsnprintf(tmp_buf + len, WLOG_MAX_LOG_BUF - len, format, vp);
+
+    if (fd > 0)
+    {
+        ret = write(fd, tmp_buf, len);
+        if (ret < 0)
+        {
+            perror("write");
+        }
+    }
+
+    return 0;
+}
+
+static int wlog_single(wlog_handle_t *handle, int thr_id, va_list vp, const char *format)
+{
+    wlog_write(handle->new_fd, handle->buf[thr_id], vp, format);
+
+    return 0;
+}
+
+
+static int wlog_multiple(wlog_handle_t *handle, int thr_id, va_list vp, const char *format)
+{
+    int ret;
+
+    if (handle->thr_fd[thr_id] <= 0)
+    {
+        WLOG_GET_TIME_SLOT(handle, handle->current_time_slot[thr_id]);
+        wlog_swap_file_multiple(handle, thr_id);
+    }
+    else
+    {
+        ret = wlog_is_create_new(handle, thr_id);
+        if (ret)
+        {
+            WLOG_GET_TIME_SLOT(handle, handle->current_time_slot[thr_id]);
+            wlog_swap_file_multiple(handle, thr_id);
+        }
+    }
+
+    wlog_write(handle->thr_fd[thr_id], handle->buf[thr_id], vp, format);
+
+    return 0;
+}
+
 
 int wlog_init(get_timestem_func_t timestem_func)
 {
@@ -308,7 +418,7 @@ int wlog_init(get_timestem_func_t timestem_func)
     return 0;
 }
 
-void *wlog_get_handle(const char *path ,const char *pre_file, uint32_t interval, int thr_num, void *user)
+void *wlog_get_handle(const char *path ,const char *pre_file, uint32_t interval, int thr_num, wlog_mod_t mod)
 {
     wlog_handle_t *handle;
     int i;
@@ -332,12 +442,23 @@ void *wlog_get_handle(const char *path ,const char *pre_file, uint32_t interval,
     }
 
     handle = calloc(sizeof(wlog_handle_t), 1);
-    handle->current_time_slot = 0;
     handle->interval = interval;
-    handle->user = user;
     handle->thr_num = thr_num;
+    handle->mod = mod;
     strncpy((char *)handle->path_name, path, MAX_PATH_NAME);
     strncpy((char *)handle->pre_file_name, pre_file, MAX_PRE_NAME_SIZE);
+
+    switch (handle->mod)
+    {
+        case wlog_mod_single_file:
+            handle->wlog_write_func = wlog_single;
+            break;
+        case wlog_mod_multiple_file:
+            handle->wlog_write_func = wlog_multiple;
+            break;
+        default:
+            break;
+    }
 
     for (i = 0; i < thr_num; i++)
     {
@@ -353,32 +474,18 @@ void *wlog_get_handle(const char *path ,const char *pre_file, uint32_t interval,
 int wlog(void *handle, int thr_id, const char *format, ...)
 {
     wlog_handle_t *wlog_handle = handle;
-    int len = 0;
-
-    time_t cur_time;
-    struct tm *ptm;
     va_list vp;
-
-    char *tmp_buf = wlog_handle->buf[thr_id];
 
     if (wlog_handle == NULL)
     {
         fprintf(stderr, "wlog handle is NULL [%s:%d]\n", __FILE__, __LINE__);
         return -1;
     }
-
-    WLOG_GET_TIME(cur_time);
-    ptm = localtime(&cur_time);
-
-    len = snprintf(tmp_buf, WLOG_MAX_LOG_BUF, "[%04d-%02d-%02d %02d:%02d:%02d] ",
-            ptm->tm_year + 1900, ptm->tm_mon + 1, ptm->tm_mday,
-            ptm->tm_hour, ptm->tm_min, ptm->tm_sec);
-
     va_start(vp, format);
-    len += vsnprintf(tmp_buf + len, WLOG_MAX_LOG_BUF - len, format, vp);
-    va_end(vp);
 
-    write(wlog_handle->new_fd, tmp_buf, len);
+    wlog_handle->wlog_write_func(wlog_handle, thr_id, vp, format);
+
+    va_end(vp);
 
     return 0;
 }

@@ -54,8 +54,8 @@ static void *test_log_thr(void *arg)
 {
     int thr_id = *((int *)arg);
 
-    //int num = 2000000;
-    int num = 100;
+    int num = 1000000;
+    //int num = 100;
     int i;
 
     uint32_t start = time(NULL);
@@ -73,14 +73,14 @@ static void *test_log_thr(void *arg)
 
 int main()
 {
-    int thr_num = 2;
+    int thr_num = 3;
     int i;
     int thr_id[64];
     pthread_t tid[64];
 
     init_jiffies_thread();
     wlog_init(get_jiffie);
-    handle = wlog_get_handle("./log/test/", "hello", 60, thr_num, NULL);
+    handle = wlog_get_handle("./log/test/", "hello", 60, thr_num, wlog_mod_multiple_file);
 
     sleep(2);
 

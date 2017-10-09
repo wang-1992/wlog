@@ -31,7 +31,8 @@
 #define WLOG_MAX_HANDLE_NUM             1024
 #define WLOG_MAX_LOG_BUF                PIPE_BUF
 
-#define ONE_DEY_SECONDS         28800
+#define ONE_HOUR_SECONDS		3600
+#define ONE_DEY_SECONDS         (ONE_HOUR_SECONDS * 24)
 
 #define WLOG_GET_TIME(_t)   \
     do{\
@@ -50,7 +51,7 @@
         switch (_h->interval)   \
         {\
             case ONE_DEY_SECONDS:   \
-                _ts = _ct / ONE_DEY_SECONDS * ONE_DEY_SECONDS - (8 * ONE_DEY_SECONDS);  \
+                _ts = _ct / ONE_DEY_SECONDS * ONE_DEY_SECONDS - (8 * ONE_HOUR_SECONDS);  \
                 break;\
             default:    \
                 _ts = _ct / (_h->interval) * (_h->interval);    \
@@ -209,9 +210,10 @@ static int wlog_make_file_name(wlog_handle_t *handle, int thr_id, char *file_nam
                     handle->pre_file_name, ptm->tm_hour, ptm->tm_min, thr_id);
             break;
         default:
-            snprintf(file_name, MAX_FILE_NAME, "%s/%04d/%02d%02d/%s_%02d_%02d.log", handle->path_name, 
-                    ptm->tm_year + 1900, ptm->tm_mon + 1, ptm->tm_mday,
-                    handle->pre_file_name, ptm->tm_hour, ptm->tm_min);
+            snprintf(file_name, MAX_FILE_NAME, "%s/%04d%02d%02d/%s_%04d%02d%02d%02d%02d", handle->path_name, 
+					ptm->tm_year + 1900,ptm->tm_mon + 1,ptm->tm_mday,
+					handle->pre_file_name,ptm->tm_year + 1900, 
+					ptm->tm_mon + 1, ptm->tm_mday,ptm->tm_hour, ptm->tm_min);
             break;
     }
 

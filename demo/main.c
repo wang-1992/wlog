@@ -80,7 +80,7 @@ int main()
 
     init_jiffies_thread();
     wlog_init(get_jiffie);
-    handle = wlog_get_handle("./log/test/", "hello", 60, thr_num, wlog_mod_multiple_file);
+    handle = wlog_get_handle("./log/test/", "hello", 60, thr_num, wlog_mod_single_file);
 
     sleep(2);
 

@@ -19,10 +19,9 @@
 #include "wlog_profile.h"
 #include "wlog_cfg.h"
 
-#define WLOG_MAX_LINE                       4096
-#define WLOG_MAX_BUF                        4096
 
 #define WLOGSTRCASECMP(_s, _d)              (strncasecmp((_s), (_d), strlen(_d))==0)
+#define WLOG_ARR_SIZE(_a)                   ((int)(sizeof(_a)/sizeof((_a)[0])))
 
 typedef enum
 {
@@ -33,11 +32,135 @@ typedef enum
 
 typedef struct
 {
-    char name[WLOG_MAX_BUF + 1];
-    char pattern[WLOG_MAX_BUF + 1];
+    char c;
+    wlog_fmt_type_t type;
+}wlog_type_map_t;
 
-    int a;
-}wlog_formats_t;
+static wlog_type_map_t wlog_type_map[] = {
+    {'d', wlog_fmt_type_time},
+    {'L', wlog_fmt_type_line},
+    {'F', wlog_fmt_type_file},
+    {'U', wlog_fmt_type_func},
+    {'m', wlog_fmt_type_log},
+};
+
+static int  wlog_fmt_add_str(wlog_fmt_str_t *fmt_str, char *str, char type)
+{
+    int i;
+    for (i = 0; i < WLOG_ARR_SIZE(wlog_type_map); i++)
+    {
+        if (wlog_type_map[i].c == type)
+        {
+            fmt_str->fmt_type = wlog_type_map[i].type;
+            strcpy(fmt_str->fmt, str);
+            return 0;
+        }
+    }
+
+    return -1;
+}
+
+static int wlog_parse_pattern(wlog_formats_t *formats)
+{
+    char *str = formats->pattern;
+    char fmt[WLOG_MAX_BUF + 1];
+    char *q;
+    char *p;
+    int str_len;
+    int nread;
+    int ret;
+    int offset = 0;
+    int copy_len;
+    char type;
+    int type_len;
+    
+    str_len = strlen(str);
+    q = str;
+
+    formats->wlog_fmt_str_num = 0;
+
+    do {
+        p = strchr(q, '%');
+        if (!p) 
+        {
+            break;
+        }
+
+        type_len = 0;
+        if (offset)
+        {
+            type = q[0];
+            type_len = 1;
+            offset = 0;
+
+            wp_debug("type = %c\n", type);
+            wp_debug("fmt = %s\n", fmt);
+
+            ret = wlog_fmt_add_str(&formats->wlog_fmt_str[formats->wlog_fmt_str_num], fmt, type);
+            if (ret == -1)
+            {
+                wp_error("type err [%c] in fmt [%s]\n", type, str);
+                goto err;
+            }
+
+            formats->wlog_fmt_str_num++;
+            if (formats->wlog_fmt_str_num >= MAX_WLOG_FMT_STR_NUM)
+            {
+                wp_error("wlog_fmt_str_num too big [%s]\n", str);
+                goto err;
+            }
+        }
+        copy_len = p - q - type_len;
+        memcpy(fmt + offset, q + type_len, copy_len);
+        offset += copy_len;
+        nread = 0;
+        ret = sscanf(p + 1, "%[.0-9-]%n", fmt + offset + 1, &nread);
+        if (ret == 1) 
+        {
+            fmt[offset] = '%';
+            fmt[nread + offset + 1] = 's';
+            offset += (nread + 2);
+        }
+        else
+        {
+            nread = 0;
+            strcpy(fmt + offset, "%s");
+            offset += 2;
+        }
+        q = p + 1 + nread;
+
+    }while(1);
+
+    if (offset)
+    {
+        type = q[0];
+        type_len = 1;
+
+        copy_len = strlen(q) - 1;
+        memcpy(fmt + offset, q + type_len, copy_len);
+
+        wp_debug("type = %c\n", type);
+        wp_debug("fmt = %s\n", fmt);
+
+        ret = wlog_fmt_add_str(&formats->wlog_fmt_str[formats->wlog_fmt_str_num], fmt, type);
+        if (ret == -1)
+        {
+            wp_error("type err [%c] in fmt [%s]\n", type, str);
+            goto err;
+        }
+
+        formats->wlog_fmt_str_num++;
+        if (formats->wlog_fmt_str_num >= MAX_WLOG_FMT_STR_NUM)
+        {
+            wp_error("wlog_fmt_str_num too big [%s]\n", str);
+            goto err;
+        }
+    }
+
+    return 0;
+err:
+    return -1;
+}
 
 static wlog_formats_t *wlog_formats_new(char *line)
 {
@@ -69,6 +192,11 @@ static wlog_formats_t *wlog_formats_new(char *line)
 
     memcpy(wlog_formats->pattern, p_start, p_end - p_start);
 
+    ret = wlog_parse_pattern(wlog_formats);
+    if (ret == -1)
+    {
+        goto err;
+    }
 
     return wlog_formats;
 err:
@@ -79,6 +207,8 @@ err:
 static int wlog_cfg_parse_line(wlog_cfg_t *wlog_cfg, char *line, step_t *step)
 {
     char name[WLOG_MAX_LINE + 1];
+    wlog_formats_t *wlog_formats = NULL;
+
     //便签行
     if (line[0] == '[')
     {
@@ -97,7 +227,7 @@ static int wlog_cfg_parse_line(wlog_cfg_t *wlog_cfg, char *line, step_t *step)
         if (lstep >= *step)
         {
             wp_error("must follow formats->rules\n");
-            return -1;
+            goto err;
         }
         
         return 0;
@@ -106,16 +236,29 @@ static int wlog_cfg_parse_line(wlog_cfg_t *wlog_cfg, char *line, step_t *step)
     switch (*step)
     {
         case step_formats:
-            wlog_formats_new(line);
+            wlog_formats = wlog_formats_new(line);
+            if (wlog_formats == NULL)
+            {
+                goto err;
+            }
+            wlog_cfg->wlog_formats[wlog_cfg->wlog_formats_num] = wlog_formats;
+            wlog_cfg->wlog_formats_num++;
+            if (wlog_cfg->wlog_formats_num >= MAX_WLOG_FMT_NUM)
+            {
+                wp_error("too many formats\n");
+                goto err;
+            }
             break;
         case step_rules:
             break;
         default:
             wp_error("not in any step\n");
-            return -1;
+            goto err;
     }
 
     return 0;
+err:
+    return -1;
 }
 
 
@@ -138,6 +281,14 @@ int wlog_parse_cfg(wlog_cfg_t *wlog_cfg, const char *file_name)
         wp_error("file is null\n");
         goto err;
     }
+
+    if (wlog_cfg == NULL)
+    {
+        wp_error("wlog_cfg is null\n");
+        goto err;
+    }
+
+    memset(wlog_cfg, 0, sizeof(wlog_cfg_t));
 
     if (lstat(file_name, &file_stat))
     {

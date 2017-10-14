@@ -23,6 +23,9 @@
 #define WLOGSTRCASECMP(_s, _d)              (strncasecmp((_s), (_d), strlen(_d))==0)
 #define WLOG_ARR_SIZE(_a)                   ((int)(sizeof(_a)/sizeof((_a)[0])))
 
+#define WLOG_MIN(_a, _b)                    (((_a) > (_b))?(_b):(_a))
+#define WLOG_STRCPY(_d, _s, _ds, _ss)       strncpy((_d), (_s), WLOG_MIN(_ds, _ss))
+
 typedef enum
 {
     step_start = 0,
@@ -52,7 +55,7 @@ static int  wlog_fmt_add_str(wlog_fmt_str_t *fmt_str, char *str, char type)
         if (wlog_type_map[i].c == type)
         {
             fmt_str->fmt_type = wlog_type_map[i].type;
-            strcpy(fmt_str->fmt, str);
+            WLOG_STRCPY(fmt_str->fmt, str, WLOG_MAX_BUF, strlen(str));
             return 0;
         }
     }
@@ -124,7 +127,7 @@ static int wlog_parse_pattern(wlog_formats_t *formats)
         else
         {
             nread = 0;
-            strcpy(fmt + offset, "%s");
+            WLOG_STRCPY(fmt + offset, "%s", WLOG_MAX_BUF - (uint32_t)offset, strlen("%s"));
             offset += 2;
         }
         q = p + 1 + nread;
@@ -204,6 +207,119 @@ err:
     return NULL;
 }
 
+/**
+ * wlog_formats 用来校验line中解析出来的format是否存在，不存在返回错误
+ **/
+static wlog_rule_t *wlog_rules_new(const char *line, wlog_formats_t *wlog_formats[], int formats_num)
+{
+    char selector[WLOG_MAX_BUF + 1] = {0};
+    char category[WLOG_MAX_BUF + 1] = {0};
+    char level[WLOG_MAX_BUF + 1] = {0};
+    int ret;
+    int nread;
+    char *p;
+    int i;
+
+    wlog_rule_t *wlog_rule = calloc(sizeof(wlog_rule_t), 1);
+
+    const char *action;
+
+    /**
+     * line = mod_test.debug "test.log";simple
+     * selector = mod_test.debug
+     * action = "test.log";simple
+     * category = mod_test
+     * level = debug
+     **/
+
+    ret = sscanf(line, "%s %n", selector, &nread);
+    if (ret != 1)
+    {
+        wp_error("sscanf [%s] fail, selector\n", line);
+        goto err;
+    }
+    action = line + nread;
+
+    ret = sscanf(selector, " %[^.].%s", category, level);
+    if (ret != 2)
+    {
+        wp_error("sscanf [%s] fail, category or level is null\n", selector);
+        goto err;
+    }
+
+    for (p = category; *p != '\0'; p++)
+    {
+        if ((!isalnum(*p)) && (*p != '_') && (*p != '*') && (*p != '!'))
+        {
+            wp_error("category name[%s] character is not in [a-Z][0-9][_!*]\n", category);
+            goto err;
+        }
+    }
+    wp_debug("selector : %s\n", selector);
+    wp_debug("action : %s\n", action);
+    wp_debug("category : %s\n", category);
+    wp_debug("level : %s\n", level);
+    //-------------------------------------------------------------
+    
+    /**
+     * action = "debug.log", 500MB|100s;simple
+     * output = "debug.log", 500MB|100s
+     * format_name = simple
+     **/
+    char output[WLOG_MAX_BUF + 1] = {0};
+    char format_name[WLOG_MAX_BUF + 1] = {0};
+
+    ret = sscanf(action, " %[^;];%s", output, format_name);
+    if (ret != 2)
+    {
+        wp_error("sscanf [%s] fail\n", action);
+        goto err;
+    }
+
+    //需要校验format_name
+    for (i = 0; i < formats_num; i++)
+    {
+        if (WLOGSTRCASECMP(format_name, wlog_formats[i]->name))
+        {
+            break;
+        }
+    }
+    //说明format_name不存在于wlog_formats中
+    if (i == formats_num)
+    {
+        wp_error("in conf file can't find format[%s], pls check\n", format_name);
+        goto err;
+    }
+    
+    /**
+     * output = "debug.log", 500MB|100s
+     * file_path = "debug.log"
+     * file_limit = 500MB|100s
+     **/
+    char file_path[WLOG_MAX_BUF + 1] = {0};
+    char file_limit[WLOG_MAX_BUF + 1] = {0};
+
+    ret = sscanf(output, " %[^,], %n", file_path, &nread);
+    if (ret < 1)
+    {
+        wp_error("sscanf [%s] fail\n", action);
+        goto err;
+    }
+    else if ((int)(strlen(output)) > nread)
+    {
+        WLOG_STRCPY(file_limit, output + nread, WLOG_MAX_BUF, strlen(output + nread));
+    }
+
+    wp_debug("output : %s\n", output);
+    wp_debug("file_path : %s\n", file_path);
+    wp_debug("file_limit : %s\n", file_limit);
+
+    return wlog_rule;
+err:
+    free(wlog_rule);
+    return NULL;
+}
+
 static int wlog_cfg_parse_line(wlog_cfg_t *wlog_cfg, char *line, step_t *step)
 {
     char name[WLOG_MAX_LINE + 1];
@@ -250,6 +366,7 @@ static int wlog_cfg_parse_line(wlog_cfg_t *wlog_cfg, char *line, step_t *step)
             }
             break;
         case step_rules:
+            wlog_rules_new(line, wlog_cfg->wlog_formats, wlog_cfg->wlog_formats_num);
             break;
         default:
             wp_error("not in any step\n");

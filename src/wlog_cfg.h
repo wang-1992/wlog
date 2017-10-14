@@ -37,6 +37,11 @@ typedef struct
 
 typedef struct
 {
+    wlog_formats_t *wlog_formats;
+}wlog_rule_t;
+
+typedef struct
+{
 #define MAX_WLOG_FMT_NUM                        20
     wlog_formats_t *wlog_formats[MAX_WLOG_FMT_NUM];
     int wlog_formats_num;

@@ -18,15 +18,15 @@ typedef enum
 {
     WLOG_LERVEL_DEBUG = 0x01,
     WLOG_LERVEL_INFO = 0x02,
-    WLOG_LERVEL_NOTICE = 0x03,
-    WLOG_LERVEL_WARN = 0x04,
-    WLOG_LERVEL_ERROR = 0x05,
-    WLOG_LERVEL_FATAL = 0x06,
+    WLOG_LERVEL_NOTICE = 0x04,
+    WLOG_LERVEL_WARN = 0x08,
+    WLOG_LERVEL_ERROR = 0x10,
+    WLOG_LERVEL_FATAL = 0x20,
 }wlog_level_t;
 
 typedef uint32_t (*get_timestem_func_t)(void);
 
-int wlog_init(get_timestem_func_t timestem_func);
+int wlog_init(const char *cfg_file, get_timestem_func_t timestem_func);
 
 void *wlog_get_handle(const char *path ,const char *pre_file, uint32_t interval, int thr_num);
 

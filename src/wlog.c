@@ -22,6 +22,8 @@
 #include <linux/limits.h>
 
 #include "wlog.h"
+#include "wlog_cfg.h"
+#include "wlog_profile.h"
 
 #define MAX_PRE_NAME_SIZE               1024
 #define MAX_PATH_NAME                   1024
@@ -88,6 +90,8 @@ typedef struct wlog_handle_t_
     int old_fd;
 }wlog_handle_t;
 
+//存储配置信息的结构体，信息从配置文件中读取
+static wlog_cfg_t wlog_cfg;
 
 static get_timestem_func_t get_timestem_func;
 static wlog_handle_t *handle_g[WLOG_MAX_HANDLE_NUM];
@@ -328,17 +332,18 @@ static int wlog_single(wlog_handle_t *handle, int thr_id, va_list vp, const char
     return 0;
 }
 
-
-int wlog_init(get_timestem_func_t timestem_func)
+int wlog_init(const char *cfg_file, get_timestem_func_t timestem_func)
 {
     pthread_t tid;
     int ret;
 
     if (wlog_init_flag)
     {
-        fprintf(stderr, "wlog alread inited [%s:%d]\n", __FILE__, __LINE__);
+        wp_error("wlog alread inited\n");
         return -1;
     }
+
+    wlog_parse_cfg(&wlog_cfg, cfg_file);
 
     ret = pthread_create(&tid, NULL, wlog_swap_file_thr, NULL);
     if (ret)
@@ -360,19 +365,19 @@ void *wlog_get_handle(const char *path ,const char *pre_file, uint32_t interval,
 
     if (wlog_init_flag == 0)
     {
-        fprintf(stderr, "wlog not init [%s:%d]\n", __FILE__, __LINE__);
+        wp_error("wlog not init\n");
         return NULL;
     }
 
     if (path == NULL || pre_file == NULL || wlog_handle_num >= WLOG_MAX_HANDLE_NUM)
     {
-        fprintf(stderr, "wlog arg error [%s:%d]\n", __FILE__, __LINE__);
+        wp_error("wlog arg error\n");
         return NULL;
     }
 
     if (thr_num > WLOG_MAX_THR_NUM)
     {
-        fprintf(stderr, "wlog thr num too big [%s:%d]\n", __FILE__, __LINE__);
+        wp_error("wlog thr num too big\n");
         return NULL;
     }
 
@@ -399,6 +404,7 @@ void *wlog_get_handle(const char *path ,const char *pre_file, uint32_t interval,
     return handle;
 }
 
+
 int wlog(void *handle, int thr_id, const char *file, size_t filelen, const char *func, size_t funclen, 
         long line, wlog_level_t level, const char *format, ...)
 {
@@ -407,7 +413,7 @@ int wlog(void *handle, int thr_id, const char *file, size_t filelen, const char 
 
     if (wlog_handle == NULL)
     {
-        fprintf(stderr, "wlog handle is NULL [%s:%d]\n", __FILE__, __LINE__);
+        wp_error("wlog handle is NULL\n");
         return -1;
     }
     va_start(vp, format);
@@ -415,6 +421,8 @@ int wlog(void *handle, int thr_id, const char *file, size_t filelen, const char 
     wlog_handle->wlog_write_func(wlog_handle, thr_id, vp, format);
 
     va_end(vp);
+
+    printf("file = %.*s, func = %.*s, line = %ld, level= %d\n", (int)filelen,file,(int)funclen,func,line,level);
 
     return 0;
 }

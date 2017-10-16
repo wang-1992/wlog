@@ -39,12 +39,27 @@ typedef struct
     wlog_fmt_type_t type;
 }wlog_type_map_t;
 
+typedef struct
+{
+    char *levsl_str;
+    wlog_level_t type;
+}wlog_level_map_t;
+
 static wlog_type_map_t wlog_type_map[] = {
     {'d', wlog_fmt_type_time},
     {'L', wlog_fmt_type_line},
     {'F', wlog_fmt_type_file},
     {'U', wlog_fmt_type_func},
     {'m', wlog_fmt_type_log},
+};
+
+static wlog_level_map_t wlog_level_map[] = {
+    {"debug", WLOG_LERVEL_DEBUG},
+    {"info", WLOG_LERVEL_INFO},
+    {"notice", WLOG_LERVEL_NOTICE},
+    {"warn", WLOG_LERVEL_WARN},
+    {"error", WLOG_LERVEL_ERROR},
+    {"fatal", WLOG_LERVEL_FATAL},
 };
 
 static int  wlog_fmt_add_str(wlog_fmt_str_t *fmt_str, char *str, char type)
@@ -207,6 +222,130 @@ err:
     return NULL;
 }
 
+static wlog_level_t wlog_get_level(const char *level_str)
+{
+    int i;
+    for (i = 0; i < WLOG_ARR_SIZE(wlog_level_map); i++)
+    {
+        if (WLOGSTRCASECMP(level_str, wlog_level_map[i].levsl_str))
+        {
+            return wlog_level_map[i].type;
+        }
+    }
+
+    return 0;
+}
+
+/**
+ * 解析rules中的filepath部分，当日志输出到文件时返回1  输出到标准输出和标准错误时返回0
+ **/
+static int wlog_parse_file_path(const char *line, wlog_rule_t *wlog_rule)
+{
+    int ret;
+    switch (line[0])
+    {
+    case '\"':
+        ret = sscanf(line + 1, "%[^ \"] %[^\"]\"", wlog_rule->pre_path, wlog_rule->file_name);
+        if (ret != 2)
+        {
+            wp_error("parse filepath err [%s]\n", line);
+            return -1;
+        }
+        if (wlog_rule->file_name[strlen(wlog_rule->file_name) - 1] == '\"')
+        {
+            wlog_rule->file_name[strlen(wlog_rule->file_name) - 1] = '\0';
+        }
+        wlog_rule->out_file_type = wlog_out_file_type_file;
+        return 1;
+
+        break;
+    case '>':
+        if (WLOGSTRCASECMP(line + 1, "stdout"))
+        {
+            wlog_rule->out_file_type = wlog_out_file_type_stdout;
+            return 0;
+        }
+        else if (WLOGSTRCASECMP(line + 1, "stderr"))
+        {
+            wlog_rule->out_file_type = wlog_out_file_type_stderr;
+            return 0;
+        }
+        else
+        {
+            wp_error("must stdout or stderr[%s]\n", line);
+            return -1;
+        }
+        break;
+    default:
+        wp_error("file line  err [%s]\n", line);
+        return -1;
+    }
+
+    return -1;
+}
+
+static int wlog_cover_str2num(const char *str, uint64_t *out_num)
+{
+    int type = -1;
+    int tmp = 1;
+    unsigned char c;
+    uint64_t num;
+    int ret;
+
+    ret = sscanf(str, "%lu%c", &num, &c);
+    if (ret != 2)
+    {
+        wp_error("file_limit err [%s]\n", str);
+        return -1;
+    }
+
+    *out_num = 0;
+    switch(c)
+    {
+    case 'G':
+        tmp = tmp * 1024L;
+    case 'M':
+        tmp = tmp * 1024L;
+    case 'K':
+        tmp = tmp * 1024L;
+    case 'B':
+        *out_num = tmp * num;
+        type = 1;
+        break;
+    case 'd':
+        tmp = tmp * 24;
+    case 'h':
+        tmp = tmp * 60;
+    case 'm':
+        tmp = tmp * 60;
+    case 's':
+        tmp = tmp * num;
+        type = 0;
+        break;
+    default:
+        break;
+    }
+
+    return -1;
+}
+
+static int wlog_parse_file_limit(const char *line, wlog_rule_t *wlog_rule)
+{
+    // line  500MB|100s
+    char limit_1[WLOG_MAX_BUF + 1] = {0};
+    char limit_2[WLOG_MAX_BUF + 1] = {0};
+    int ret;
+
+    if (line[0] == '\0')
+    {
+        return 0;
+    }
+
+    ret = sscanf(line, "%[^|]|%s", limit_1, limit_2);
+
+    return 0;
+}
+
 /**
  * wlog_formats 用来校验line中解析出来的format是否存在，不存在返回错误
  **/
@@ -259,6 +398,9 @@ static wlog_rule_t *wlog_rules_new(const char *line, wlog_formats_t *wlog_format
     wp_debug("action : %s\n", action);
     wp_debug("category : %s\n", category);
     wp_debug("level : %s\n", level);
+
+    wlog_rule->level = wlog_get_level(level);
+    WLOG_STRCPY(wlog_rule->category, category, WLOG_MAX_BUF, strlen(category));
     //-------------------------------------------------------------
     
     /**
@@ -281,6 +423,7 @@ static wlog_rule_t *wlog_rules_new(const char *line, wlog_formats_t *wlog_format
     {
         if (WLOGSTRCASECMP(format_name, wlog_formats[i]->name))
         {
+            wlog_rule->wlog_formats = wlog_formats[i];
             break;
         }
     }
@@ -292,9 +435,9 @@ static wlog_rule_t *wlog_rules_new(const char *line, wlog_formats_t *wlog_format
     }
     
     /**
-     * output = "debug.log", 500MB|100s
+     * output = "debug.log", 500M|100s
      * file_path = "debug.log"
-     * file_limit = 500MB|100s
+     * file_limit = 500M|100s
      **/
     char file_path[WLOG_MAX_BUF + 1] = {0};
     char file_limit[WLOG_MAX_BUF + 1] = {0};
@@ -305,7 +448,7 @@ static wlog_rule_t *wlog_rules_new(const char *line, wlog_formats_t *wlog_format
         wp_error("sscanf [%s] fail\n", action);
         goto err;
     }
-    else if ((int)(strlen(output)) > nread)
+    else if ((strlen(output)) > strlen(file_path))
     {
         WLOG_STRCPY(file_limit, output + nread, WLOG_MAX_BUF, strlen(output + nread));
     }
@@ -313,6 +456,15 @@ static wlog_rule_t *wlog_rules_new(const char *line, wlog_formats_t *wlog_format
     wp_debug("output : %s\n", output);
     wp_debug("file_path : %s\n", file_path);
     wp_debug("file_limit : %s\n", file_limit);
+    ret = wlog_parse_file_path(file_path, wlog_rule);
+    if (ret == -1)
+    {
+        goto err;
+    }
+    else if (ret == 1) //输出到真实文件 需要解析file_limit
+    {
+        wlog_parse_file_limit(file_limit, wlog_rule);
+    }
 
     return wlog_rule;
 err:

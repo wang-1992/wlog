@@ -28,7 +28,7 @@ typedef uint32_t (*get_timestem_func_t)(void);
 
 int wlog_init(const char *cfg_file, get_timestem_func_t timestem_func);
 
-void *wlog_get_handle(const char *path ,const char *pre_file, uint32_t interval, int thr_num);
+void *wlog_get_handle_old(const char *path ,const char *pre_file, uint32_t interval, int thr_num);
 
 int wlog(void *handle, int thr_id, const char *file, size_t filelen, const char *func, size_t funclen, 
         long line, wlog_level_t level, const char *format, ...);

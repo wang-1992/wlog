@@ -74,17 +74,13 @@
 
 typedef struct wlog_handle_t_
 {
+    wlog_rule_t *wlog_rule;
     unsigned char path_name[MAX_PATH_NAME + 1];
     unsigned char pre_file_name[MAX_PRE_NAME_SIZE + 1];
     uint32_t interval;
     uint32_t current_time_slot;
     int thr_num;
     char *buf[WLOG_MAX_THR_NUM];
-
-    int (*wlog_write_func)(struct wlog_handle_t_ *, int, va_list, const char *);
-
-    //每个线程使用一个句柄时使用
-    int thr_fd[WLOG_MAX_THR_NUM];
 
     int new_fd;
     int old_fd;
@@ -99,7 +95,6 @@ static int wlog_handle_num = 0;
 static uint8_t wlog_init_flag;
 
 static pthread_mutex_t wlog_mutex = PTHREAD_MUTEX_INITIALIZER;
-
 
 static int wlog_is_path_exists(char *path)
 {
@@ -358,7 +353,50 @@ int wlog_init(const char *cfg_file, get_timestem_func_t timestem_func)
     return 0;
 }
 
-void *wlog_get_handle(const char *path ,const char *pre_file, uint32_t interval, int thr_num)
+void *wlog_get_handle(const char *name , int thr_num)
+{
+    wlog_handle_t *handle;
+    int i;
+
+    if (wlog_init_flag == 0)
+    {
+        wp_error("wlog not init\n");
+        return NULL;
+    }
+
+    if (name == NULL)
+    {
+        return NULL;
+    }
+
+    if (wlog_handle_num >= WLOG_MAX_HANDLE_NUM)
+    {
+        return NULL;
+    }
+
+    handle = calloc(sizeof(wlog_handle_t), 1);
+
+    handle->thr_num = thr_num;
+
+    for (i = 0; i < thr_num; i++)
+    {
+        handle->buf[i] = malloc(WLOG_MAX_LOG_BUF);
+    }
+
+    for (i = 0; i < wlog_cfg.wlog_rule_num; i++)
+    {
+        if (WLOGSTRCASECMP(wlog_cfg.wlog_rule[i]->category, name))
+        {
+            handle->wlog_rule = wlog_cfg.wlog_rule[i];
+        }
+    }
+
+    handle_g[wlog_handle_num] = handle;
+    wlog_handle_num++;
+    return NULL;
+}
+
+void *wlog_get_handle_old(const char *path ,const char *pre_file, uint32_t interval, int thr_num)
 {
     wlog_handle_t *handle;
     int i;
@@ -386,8 +424,6 @@ void *wlog_get_handle(const char *path ,const char *pre_file, uint32_t interval,
     handle->thr_num = thr_num;
     strncpy((char *)handle->path_name, path, MAX_PATH_NAME);
     strncpy((char *)handle->pre_file_name, pre_file, MAX_PRE_NAME_SIZE);
-
-    handle->wlog_write_func = wlog_single;
 
     for (i = 0; i < thr_num; i++)
     {
@@ -418,7 +454,7 @@ int wlog(void *handle, int thr_id, const char *file, size_t filelen, const char 
     }
     va_start(vp, format);
 
-    wlog_handle->wlog_write_func(wlog_handle, thr_id, vp, format);
+    wlog_single(wlog_handle, thr_id, vp, format);
 
     va_end(vp);
 

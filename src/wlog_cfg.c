@@ -20,11 +20,6 @@
 #include "wlog_cfg.h"
 
 
-#define WLOGSTRCASECMP(_s, _d)              (strncasecmp((_s), (_d), strlen(_d))==0)
-#define WLOG_ARR_SIZE(_a)                   ((int)(sizeof(_a)/sizeof((_a)[0])))
-
-#define WLOG_MIN(_a, _b)                    (((_a) > (_b))?(_b):(_a))
-#define WLOG_STRCPY(_d, _s, _ds, _ss)       strncpy((_d), (_s), WLOG_MIN(_ds, _ss))
 
 typedef enum
 {
@@ -284,6 +279,10 @@ static int wlog_parse_file_path(const char *line, wlog_rule_t *wlog_rule)
     return -1;
 }
 
+#define WLOG_LIMIT_TYPE_TIME                    1
+#define WLOG_LIMIT_TYPE_SIZE                    2
+
+
 static int wlog_cover_str2num(const char *str, uint64_t *out_num)
 {
     int type = -1;
@@ -310,7 +309,7 @@ static int wlog_cover_str2num(const char *str, uint64_t *out_num)
         tmp = tmp * 1024L;
     case 'B':
         *out_num = tmp * num;
-        type = 1;
+        type = WLOG_LIMIT_TYPE_SIZE;
         break;
     case 'd':
         tmp = tmp * 24;
@@ -319,14 +318,35 @@ static int wlog_cover_str2num(const char *str, uint64_t *out_num)
     case 'm':
         tmp = tmp * 60;
     case 's':
-        tmp = tmp * num;
-        type = 0;
+        *out_num = tmp * num;
+        type = WLOG_LIMIT_TYPE_TIME;
         break;
     default:
         break;
     }
 
-    return -1;
+    return type;
+}
+
+static int wlog_parse_limit_str(const char *limit, wlog_file_limit_t *file_limit)
+{
+    uint64_t out_num = 0;
+    int type;
+
+    type = wlog_cover_str2num(limit, &out_num);
+    if (type == WLOG_LIMIT_TYPE_SIZE)
+    {
+        file_limit->file_size = out_num;
+    }
+    else if (type == WLOG_LIMIT_TYPE_TIME)
+    {
+        file_limit->interval = out_num;
+    }
+    else
+    {
+        return -1;
+    }
+    return 0;
 }
 
 static int wlog_parse_file_limit(const char *line, wlog_rule_t *wlog_rule)
@@ -342,6 +362,31 @@ static int wlog_parse_file_limit(const char *line, wlog_rule_t *wlog_rule)
     }
 
     ret = sscanf(line, "%[^|]|%s", limit_1, limit_2);
+    if (ret == 2)
+    {
+        ret = wlog_parse_limit_str(limit_1, &(wlog_rule->file_limit));
+        if (ret == -1)
+        {
+            return -1;
+        }
+        ret = wlog_parse_limit_str(limit_2, &(wlog_rule->file_limit));
+        if (ret == -1)
+        {
+            return -1;
+        }
+    }
+    else if (ret == 1)
+    {
+        ret = wlog_parse_limit_str(limit_1, &(wlog_rule->file_limit));
+        if (ret == -1)
+        {
+            return -1;
+        }
+    }
+    else
+    {
+        return -1;
+    }
 
     return 0;
 }
@@ -476,6 +521,7 @@ static int wlog_cfg_parse_line(wlog_cfg_t *wlog_cfg, char *line, step_t *step)
 {
     char name[WLOG_MAX_LINE + 1];
     wlog_formats_t *wlog_formats = NULL;
+    wlog_rule_t *wlog_rule = NULL;
 
     //便签行
     if (line[0] == '[')
@@ -518,7 +564,18 @@ static int wlog_cfg_parse_line(wlog_cfg_t *wlog_cfg, char *line, step_t *step)
             }
             break;
         case step_rules:
-            wlog_rules_new(line, wlog_cfg->wlog_formats, wlog_cfg->wlog_formats_num);
+            wlog_rule = wlog_rules_new(line, wlog_cfg->wlog_formats, wlog_cfg->wlog_formats_num);
+            if (wlog_rule == NULL)
+            {
+                goto err;
+            }
+            wlog_cfg->wlog_rule[wlog_cfg->wlog_rule_num] = wlog_rule;
+            wlog_cfg->wlog_rule_num++;
+            if (wlog_cfg->wlog_rule_num >= MAX_WLOG_RULE_NUM)
+            {
+                wp_error("too many rules\n");
+                goto err;
+            }
             break;
         default:
             wp_error("not in any step\n");

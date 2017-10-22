@@ -68,6 +68,9 @@ typedef struct
 #define MAX_WLOG_FMT_NUM                        20
     wlog_formats_t *wlog_formats[MAX_WLOG_FMT_NUM];
     int wlog_formats_num;
+#define MAX_WLOG_RULE_NUM                       100
+    wlog_rule_t *wlog_rule[MAX_WLOG_RULE_NUM];
+    int wlog_rule_num;
 }wlog_cfg_t;
 
 int wlog_parse_cfg(wlog_cfg_t *wlog_cfg, const char *file_name);

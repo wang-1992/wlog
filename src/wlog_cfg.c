@@ -79,7 +79,6 @@ static int wlog_parse_pattern(wlog_formats_t *formats)
     char fmt[WLOG_MAX_BUF + 1];
     char *q;
     char *p;
-    int str_len;
     int nread;
     int ret;
     int offset = 0;
@@ -87,7 +86,6 @@ static int wlog_parse_pattern(wlog_formats_t *formats)
     char type;
     int type_len;
     
-    str_len = strlen(str);
     q = str;
 
     formats->wlog_fmt_str_num = 0;

@@ -45,17 +45,20 @@
         }   \
     }while(0)
 
-#define WLOG_GET_TIME_SLOT(_h, _ts)  \
+#define WLOG_GET_TIME_SLOT(_i, _ts)  \
     do{\
         uint32_t _ct;   \
         WLOG_GET_TIME(_ct);    \
-        switch (_h->interval)   \
+        switch (_i)   \
         {\
             case ONE_DEY_SECONDS:   \
                 _ts = _ct / ONE_DEY_SECONDS * ONE_DEY_SECONDS - (8 * ONE_HOUR_SECONDS);  \
                 break;\
+            case 0: \
+                _ts = 0;    \
+                break;  \
             default:    \
-                _ts = _ct / (_h->interval) * (_h->interval);    \
+                _ts = _ct / (_i) * (_i);    \
                 break;  \
         }\
     }while(0)
@@ -75,10 +78,9 @@
 typedef struct wlog_handle_t_
 {
     wlog_rule_t *wlog_rule;
-    unsigned char path_name[MAX_PATH_NAME + 1];
-    unsigned char pre_file_name[MAX_PRE_NAME_SIZE + 1];
-    uint32_t interval;
     uint32_t current_time_slot;
+    uint64_t current_file_size;
+
     int thr_num;
     char *buf[WLOG_MAX_THR_NUM];
 
@@ -192,19 +194,22 @@ static int wlog_mkdirs_with_file(char *path)
     return 0;
 }
 
-
-
-
 static int wlog_make_file_name(wlog_handle_t *handle, char *file_name)
 {
     time_t time_slot = handle->current_time_slot;
+    wlog_rule_t *rule = handle->wlog_rule;
     struct tm *ptm;
+
+    if (rule == NULL)
+    {
+        return -1;
+    }
 
     ptm = localtime(&time_slot);
 
-    snprintf(file_name, MAX_FILE_NAME, "%s/%04d%02d%02d/%s_%04d%02d%02d%02d%02d", handle->path_name, 
+    snprintf(file_name, MAX_FILE_NAME, "%s/%04d%02d%02d/%s_%04d%02d%02d%02d%02d", rule->pre_path,
             ptm->tm_year + 1900,ptm->tm_mon + 1,ptm->tm_mday,
-            handle->pre_file_name,ptm->tm_year + 1900, 
+            rule->file_name, ptm->tm_year + 1900, 
             ptm->tm_mon + 1, ptm->tm_mday,ptm->tm_hour, ptm->tm_min);
 
     wlog_mkdirs_with_file(file_name);
@@ -212,30 +217,17 @@ static int wlog_make_file_name(wlog_handle_t *handle, char *file_name)
     return 0;
 }
 
-static int wlog_is_create_new(wlog_handle_t *handle)
-{
-    uint32_t current_time_slot;
 
-    if (handle->interval == 0)
-    {
-        return 0;
-    }
-    else
-    {
-        WLOG_GET_TIME_SLOT(handle, current_time_slot);
-        if (handle->current_time_slot < current_time_slot)
-        {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static int wlog_swap_file_single(wlog_handle_t *handle)
+static int wlog_swap_file(wlog_handle_t *handle)
 {
     char file_name[MAX_FILE_NAME] = {0};
+    int ret;
 
-    wlog_make_file_name(handle, file_name);
+    ret = wlog_make_file_name(handle, file_name);
+    if (ret == -1)
+    {
+        return -1;
+    }
 
     if (handle->old_fd > 0)
     {
@@ -258,6 +250,50 @@ static int wlog_swap_file_single(wlog_handle_t *handle)
 
 }
 
+static int wlog_is_create_new(wlog_handle_t *wlog_handle)
+{
+    uint32_t current_time_slot;
+
+
+
+    switch (wlog_handle->wlog_rule->out_file_type)
+    {
+    case wlog_out_file_type_stderr:
+        wlog_handle->new_fd = STDERR_FILENO;
+        //对于标准输入和输出不需要创建文件
+        return 0;
+    case wlog_out_file_type_stdout:
+        wlog_handle->new_fd = STDOUT_FILENO;
+        //对于标准输入和输出不需要创建文件
+        return 0;
+        break;
+    default:
+        break;
+    }
+
+    WLOG_GET_TIME_SLOT(wlog_handle->wlog_rule->file_limit.interval, current_time_slot);
+    //第一次调用必须生成文件
+    if (wlog_handle->new_fd <= 0)
+    {
+            
+        goto new;
+    }
+    if (wlog_handle->wlog_rule->file_limit.interval != 0 && wlog_handle->current_time_slot < current_time_slot)
+    {
+        goto new;
+    }
+    if (wlog_handle->wlog_rule->file_limit.file_size != 0 
+            && wlog_handle->wlog_rule->file_limit.file_size < wlog_handle->current_file_size)
+    {
+        goto new;
+    }
+    return 0;
+new:
+    wlog_handle->current_time_slot = current_time_slot;
+    wlog_handle->current_file_size = 0;
+    return 1;
+}
+
 static void *wlog_swap_file_thr(void *arg)
 {
     int i;
@@ -270,20 +306,14 @@ static void *wlog_swap_file_thr(void *arg)
         for (i = 0; i < wlog_handle_num; i++)
         {
             //第一次调用，必须要生成文件
-            if (handle_g[i]->new_fd <= 0)
+            if (handle_g[i]->wlog_rule == NULL)
             {
-                WLOG_GET_TIME_SLOT(handle_g[i], handle_g[i]->current_time_slot);
-                wlog_swap_file_single(handle_g[i]);
+                continue;
             }
-            else
+            ret = wlog_is_create_new(handle_g[i]);
+            if (ret)
             {
-                //需要判断间隔，是否将日志写到新的文件中
-                ret = wlog_is_create_new(handle_g[i]);
-                if (ret)
-                {
-                    WLOG_GET_TIME_SLOT(handle_g[i], handle_g[i]->current_time_slot);
-                    wlog_swap_file_single(handle_g[i]);
-                }
+                wlog_swap_file(handle_g[i]);
             }
         }
         pthread_mutex_unlock(&wlog_mutex);
@@ -393,50 +423,6 @@ void *wlog_get_handle(const char *name , int thr_num)
 
     handle_g[wlog_handle_num] = handle;
     wlog_handle_num++;
-    return NULL;
-}
-
-void *wlog_get_handle_old(const char *path ,const char *pre_file, uint32_t interval, int thr_num)
-{
-    wlog_handle_t *handle;
-    int i;
-
-    if (wlog_init_flag == 0)
-    {
-        wp_error("wlog not init\n");
-        return NULL;
-    }
-
-    if (path == NULL || pre_file == NULL || wlog_handle_num >= WLOG_MAX_HANDLE_NUM)
-    {
-        wp_error("wlog arg error\n");
-        return NULL;
-    }
-
-    if (thr_num > WLOG_MAX_THR_NUM)
-    {
-        wp_error("wlog thr num too big\n");
-        return NULL;
-    }
-
-    handle = calloc(sizeof(wlog_handle_t), 1);
-    handle->interval = interval;
-    handle->thr_num = thr_num;
-    strncpy((char *)handle->path_name, path, MAX_PATH_NAME);
-    strncpy((char *)handle->pre_file_name, pre_file, MAX_PRE_NAME_SIZE);
-
-    for (i = 0; i < thr_num; i++)
-    {
-        handle->buf[i] = malloc(WLOG_MAX_LOG_BUF);
-    }
-
-    pthread_mutex_lock(&wlog_mutex);
-
-    handle_g[wlog_handle_num] = handle;
-    wlog_handle_num++;
-
-    pthread_mutex_unlock(&wlog_mutex);
-
     return handle;
 }
 
@@ -458,7 +444,7 @@ int wlog(void *handle, int thr_id, const char *file, size_t filelen, const char 
 
     va_end(vp);
 
-    printf("file = %.*s, func = %.*s, line = %ld, level= %d\n", (int)filelen,file,(int)funclen,func,line,level);
+    //printf("file = %.*s, func = %.*s, line = %ld, level= %d\n", (int)filelen,file,(int)funclen,func,line,level);
 
     return 0;
 }

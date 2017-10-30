@@ -62,7 +62,7 @@ static void *test_log_thr(void *arg)
 
     for (i = 0; i < num; i++)
     {
-        wlog(handle, thr_id, "thr_id:%d----------test %d-------------%s:%d\n", thr_id, i, __FILE__, __LINE__);
+        wlog_debug(handle, thr_id, "thr_id:%d----------test %d-------------%s:%d\n", thr_id, i, __FILE__, __LINE__);
     }
     uint32_t end = time(NULL);
 
@@ -79,8 +79,9 @@ int main()
     pthread_t tid[64];
 
     init_jiffies_thread();
-    wlog_init(get_jiffie);
-    handle = wlog_get_handle("./log/test/", "hello", 60, thr_num, wlog_mod_single_file);
+    wlog_init("./wlog_cfg.conf", get_jiffie);
+
+    handle = wlog_get_handle("test", thr_num);
 
     sleep(2);
 

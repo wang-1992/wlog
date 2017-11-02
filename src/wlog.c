@@ -30,6 +30,7 @@
 #define MAX_FILE_NAME                   MAX_PRE_NAME_SIZE + MAX_PATH_NAME + 1
 #define WLOG_MAX_THR_NUM                64
 #define WLOG_MAX_HANDLE_NUM             1024
+#define WLOG_MAX_BUF_SIZE               1024
 #define WLOG_MAX_LOG_BUF                PIPE_BUF
 
 #define ONE_HOUR_SECONDS		3600
@@ -95,6 +96,7 @@ static get_timestem_func_t get_timestem_func;
 static wlog_handle_t *handle_g[WLOG_MAX_HANDLE_NUM];
 static int wlog_handle_num = 0;
 static uint8_t wlog_init_flag;
+static char wlog_tmp_buf[WLOG_MAX_THR_NUM][WLOG_MAX_BUF_SIZE];
 
 static pthread_mutex_t wlog_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -321,10 +323,9 @@ static void *wlog_swap_file_thr(void *arg)
     return arg;
 }
 
-static int wlog_write(int fd, char *tmp_buf, va_list vp, const char *format)
+static int wlog_time_str(char *buf, int buf_size)
 {
     int len = 0;
-    int ret;
 
     time_t cur_time;
     struct tm *ptm;
@@ -332,29 +333,16 @@ static int wlog_write(int fd, char *tmp_buf, va_list vp, const char *format)
     WLOG_GET_TIME(cur_time);
     ptm = localtime(&cur_time);
 
-    len = snprintf(tmp_buf, WLOG_MAX_LOG_BUF, "[%04d-%02d-%02d %02d:%02d:%02d] ",
+    len = snprintf(buf, buf_size, "%04d-%02d-%02d %02d:%02d:%02d",
             ptm->tm_year + 1900, ptm->tm_mon + 1, ptm->tm_mday,
             ptm->tm_hour, ptm->tm_min, ptm->tm_sec);
 
-    len += vsnprintf(tmp_buf + len, WLOG_MAX_LOG_BUF - len, format, vp);
-
-    if (fd > 0)
-    {
-        ret = write(fd, tmp_buf, len);
-        if (ret < 0)
-        {
-            perror("write");
-        }
-    }
-
-    return 0;
+    return len;
 }
 
-static int wlog_single(wlog_handle_t *handle, int thr_id, va_list vp, const char *format)
+static int wlog_log_str(char *buf, int buf_size, va_list vp, const char *format)
 {
-    wlog_write(handle->new_fd, handle->buf[thr_id], vp, format);
-
-    return 0;
+    return vsnprintf(buf, buf_size, format, vp);
 }
 
 int wlog_init(const char *cfg_file, get_timestem_func_t timestem_func)
@@ -431,20 +419,58 @@ int wlog(void *handle, int thr_id, const char *file, size_t filelen, const char 
         long line, wlog_level_t level, const char *format, ...)
 {
     wlog_handle_t *wlog_handle = handle;
+    int i;
     va_list vp;
+    char *buf = wlog_handle->buf[thr_id];
+    int len = 0;
+    int ret;
 
-    if (wlog_handle == NULL)
+    if (wlog_handle == NULL || wlog_handle->wlog_rule == NULL || wlog_handle->wlog_rule->level < level)
     {
-        wp_error("wlog handle is NULL\n");
         return -1;
     }
+    wlog_formats_t *wlog_formats = wlog_handle->wlog_rule->wlog_formats;
+    if (wlog_formats == NULL)
+    {
+        return -1;
+    }
+
     va_start(vp, format);
 
-    wlog_single(wlog_handle, thr_id, vp, format);
+    //wlog_single(wlog_handle, thr_id, vp, format);
+    for (i = 0; i < wlog_formats->wlog_fmt_str_num; i++)
+    {
+        switch (wlog_formats->wlog_fmt_str[i].fmt_type)
+        {
+        case wlog_fmt_type_time:
+            wlog_time_str(wlog_tmp_buf[thr_id], WLOG_MAX_BUF_SIZE);
+            len += snprintf(buf + len, WLOG_MAX_LOG_BUF - len, wlog_formats->wlog_fmt_str[i].fmt, wlog_tmp_buf[thr_id]);
+            break;
+        case wlog_fmt_type_line:
+            len += snprintf(buf + len, WLOG_MAX_LOG_BUF - len, wlog_formats->wlog_fmt_str[i].fmt, line);
+            break;
+        case wlog_fmt_type_file:
+            len += snprintf(buf + len, WLOG_MAX_LOG_BUF - len, wlog_formats->wlog_fmt_str[i].fmt, file);
+            break;
+        case wlog_fmt_type_func:
+            len += snprintf(buf + len, WLOG_MAX_LOG_BUF - len, wlog_formats->wlog_fmt_str[i].fmt, func);
+            break;
+        case wlog_fmt_type_log:
+            wlog_log_str(wlog_tmp_buf[thr_id], WLOG_MAX_BUF_SIZE, vp, format);
+            len += snprintf(buf + len, WLOG_MAX_LOG_BUF - len, wlog_formats->wlog_fmt_str[i].fmt, wlog_tmp_buf[thr_id]);
+            break;
+        default:
+            break;
+        }
+    }
 
     va_end(vp);
 
-    //printf("file = %.*s, func = %.*s, line = %ld, level= %d\n", (int)filelen,file,(int)funclen,func,line,level);
+    ret = write(wlog_handle->new_fd, buf, len);
+    if (ret < 0)
+    {
+        perror("write");
+    }
 
     return 0;
 }

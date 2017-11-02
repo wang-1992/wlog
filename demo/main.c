@@ -62,7 +62,7 @@ static void *test_log_thr(void *arg)
 
     for (i = 0; i < num; i++)
     {
-        wlog_debug(handle, thr_id, "thr_id:%d----------test %d-------------%s:%d\n", thr_id, i, __FILE__, __LINE__);
+        wlog_error(handle, thr_id, "thr_id:%d----------test %d-------------\n", thr_id, i);
     }
     uint32_t end = time(NULL);
 
@@ -73,7 +73,7 @@ static void *test_log_thr(void *arg)
 
 int main()
 {
-    int thr_num = 3;
+    int thr_num = 1;
     int i;
     int thr_id[64];
     pthread_t tid[64];
